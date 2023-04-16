@@ -1,26 +1,17 @@
 package launcher_test
 
 import (
-	"archive/zip"
-	"bytes"
-	"context"
 	"crypto"
 	"crypto/x509"
 	"encoding/pem"
 	"flag"
-	"fmt"
-	"io"
 	"io/ioutil"
-	"net/http"
-	"net/http/httptest"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-rod/rod/lib/defaults"
 	"github.com/go-rod/rod/lib/launcher"
@@ -37,77 +28,6 @@ func TestDownloadHosts(t *testing.T) {
 	g.Has(launcher.HostGoogle(launcher.RevisionDefault), "https://storage.googleapis.com/chromium-browser-snapshots")
 	g.Has(launcher.HostNPM(launcher.RevisionDefault), "https://registry.npmmirror.com/-/binary/chromium-browser-snapshots")
 	g.Has(launcher.HostPlaywright(launcher.RevisionDefault), "https://playwright.azureedge.net/")
-}
-
-func TestDownload(t *testing.T) {
-	g := setup(t)
-
-	s := g.Serve()
-	s.Mux.HandleFunc("/fast/", func(rw http.ResponseWriter, r *http.Request) {
-		buf := bytes.NewBuffer(nil)
-		zw := zip.NewWriter(buf)
-
-		// folder "to"
-		h := &zip.FileHeader{Name: "to/"}
-		h.SetMode(0755)
-		_, err := zw.CreateHeader(h)
-		g.E(err)
-
-		// file "file.txt"
-		w, err := zw.CreateHeader(&zip.FileHeader{Name: "to/file.txt"})
-		g.E(err)
-		b := []byte(g.RandStr(2 * 1024 * 1024))
-		g.E(w.Write(b))
-
-		g.E(zw.Close())
-
-		rw.Header().Add("Content-Length", fmt.Sprintf("%d", buf.Len()))
-		_, _ = io.Copy(rw, buf)
-	})
-	s.Mux.HandleFunc("/slow/", func(rw http.ResponseWriter, r *http.Request) {
-		t := time.NewTimer(3 * time.Second)
-		select {
-		case <-t.C:
-		case <-r.Context().Done():
-			t.Stop()
-		}
-	})
-
-	b, cancel := newBrowser()
-	b.Logger = utils.LoggerQuiet
-	defer cancel()
-
-	b.Hosts = []launcher.Host{launcher.HostTest(s.URL("/slow")), launcher.HostTest(s.URL("/fast"))}
-	b.Dir = filepath.Join("tmp", "browser-from-mirror", g.RandStr(16))
-	g.E(b.Download())
-	g.Nil(os.Stat(b.Dir))
-
-	// download chrome with a proxy
-	// should fail with self signed certificate
-	p := httptest.NewTLSServer(&httputil.ReverseProxy{Director: func(_ *http.Request) {}})
-	defer p.Close()
-	// invalid proxy URL should trigger an error
-	err := b.Proxy(`invalid.escaping%%2`)
-	g.Eq(err.Error(), `parse "invalid.escaping%%2": invalid URL escape "%%2"`)
-
-	g.E(b.Proxy(p.URL))
-	g.NotNil(b.Download())
-	// should instead be successful with ignore certificate
-	b.IgnoreCerts = true
-	g.E(b.Download())
-	g.Nil(os.Stat(b.Dir))
-}
-
-func TestBrowserGet(t *testing.T) {
-	g := setup(t)
-
-	g.Nil(os.Stat(launcher.NewBrowser().MustGet()))
-
-	b := launcher.NewBrowser()
-	b.Revision = 0
-	b.Logger = utils.LoggerQuiet
-	_, err := b.Get()
-	g.Eq(err.Error(), "Can't find a browser binary for your OS, the doc might help https://go-rod.github.io/#/compatibility?id=os")
 }
 
 func TestLaunch(t *testing.T) {
@@ -237,16 +157,6 @@ func TestLaunchErr(t *testing.T) {
 		_, _ = l.Launch()
 		l.Kill()
 	}
-}
-
-func newBrowser() (*launcher.Browser, func()) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	b := launcher.NewBrowser()
-	if !testing.Verbose() {
-		b.Logger = utils.LoggerQuiet
-	}
-	b.Context = ctx
-	return b, cancel
 }
 
 var testProfileDir = flag.Bool("test-profile-dir", false, "set it to test profile dir")

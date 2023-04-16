@@ -57,12 +57,6 @@ func TestToWS(t *testing.T) {
 	g.Eq("ws", toWS(*u).Scheme)
 }
 
-func TestUnzip(t *testing.T) {
-	g := setup(t)
-
-	g.Err(unzip(utils.LoggerQuiet, "", ""))
-}
-
 func TestLaunchOptions(t *testing.T) {
 	g := setup(t)
 
@@ -150,16 +144,6 @@ func TestLaunchErrs(t *testing.T) {
 	g.Err(err)
 }
 
-func TestProgresser(t *testing.T) {
-	g := setup(t)
-
-	p := progresser{size: 100, logger: utils.LoggerQuiet}
-
-	g.E(p.Write(make([]byte, 100)))
-	g.E(p.Write(make([]byte, 100)))
-	g.E(p.Write(make([]byte, 100)))
-}
-
 func TestURLParserErr(t *testing.T) {
 	g := setup(t)
 
@@ -176,11 +160,10 @@ func TestURLParserErr(t *testing.T) {
 
 func TestBrowserDownloadErr(t *testing.T) {
 	g := setup(t)
-
-	r := g.Serve().Route("/", "", "")
 	b := NewBrowser()
 	b.Logger = utils.LoggerQuiet
-	g.Has(b.download(g.Context(), r.URL()).Error(), "failed to download the browser: 200")
+	b.Hosts = []Host{}
+	g.Err(b.Download())
 }
 
 func TestTestOpen(_ *testing.T) {

@@ -6,8 +6,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -15,12 +13,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/go-rod/rod/lib/defaults"
 	"github.com/go-rod/rod/lib/utils"
+	"github.com/ysmood/fetchup"
 	"github.com/ysmood/leakless"
 )
 
@@ -119,30 +116,34 @@ func NewBrowser() *Browser {
 // Destination of the downloaded browser executable
 func (lc *Browser) Destination() string {
 	bin := map[string]string{
-		"darwin":  fmt.Sprintf("chromium-%d/chrome-mac/Chromium.app/Contents/MacOS/Chromium", lc.Revision),
-		"linux":   fmt.Sprintf("chromium-%d/chrome-linux/chrome", lc.Revision),
-		"windows": fmt.Sprintf("chromium-%d/chrome-win/chrome.exe", lc.Revision),
+		"darwin":  fmt.Sprintf("chromium-%d/Chromium.app/Contents/MacOS/Chromium", lc.Revision),
+		"linux":   fmt.Sprintf("chromium-%d/chrome", lc.Revision),
+		"windows": fmt.Sprintf("chromium-%d/chrome.exe", lc.Revision),
 	}[runtime.GOOS]
 
 	return filepath.Join(lc.Dir, bin)
 }
 
 // Download browser from the fastest host. It will race downloading a TCP packet from each host and use the fastest host.
-func (lc *Browser) Download() (err error) {
-	defer func() {
-		if e := recover(); e != nil {
-			err = e.(error)
-		}
-	}()
-
-	u, err := lc.fastestHost()
-	utils.E(err)
-
-	if u == "" {
-		panic(fmt.Errorf("Can't find a browser binary for your OS, the doc might help https://go-rod.github.io/#/compatibility?id=os"))
+func (lc *Browser) Download() error {
+	us := []string{}
+	for _, host := range lc.Hosts {
+		us = append(us, host(lc.Revision))
 	}
 
-	return lc.download(lc.Context, u)
+	unzipPath := filepath.Join(lc.Dir, fmt.Sprintf("chromium-%d", lc.Revision))
+	_ = os.RemoveAll(unzipPath)
+
+	fu := fetchup.New(unzipPath, us...)
+	fu.Ctx = lc.Context
+	fu.HttpClient = lc.httpClient()
+
+	err := fu.Fetch()
+	if err != nil {
+		return fmt.Errorf("Can't find a browser binary for your OS, the doc might help https://go-rod.github.io/#/compatibility?id=os : %w", err)
+	}
+
+	return fetchup.StripFirstDir(unzipPath)
 }
 
 // Proxy sets the proxy for chrome download
@@ -153,97 +154,6 @@ func (lc *Browser) Proxy(URL string) error {
 	}
 	lc.proxyURL = proxyURL
 	return err
-}
-
-func (lc *Browser) fastestHost() (fastest string, err error) {
-	lc.Logger.Println("try to find the fastest host to download the browser binary")
-
-	setURL := sync.Once{}
-	ctx, cancel := context.WithCancel(lc.Context)
-	defer cancel()
-
-	wg := sync.WaitGroup{}
-	for _, host := range lc.Hosts {
-		u := host(lc.Revision)
-
-		lc.Logger.Println("check", u)
-		wg.Add(1)
-
-		go func() {
-			defer func() {
-				err := recover()
-				if err != nil {
-					lc.Logger.Println("check result:", err)
-				}
-				wg.Done()
-			}()
-
-			q, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-			utils.E(err)
-
-			res, err := lc.httpClient().Do(q)
-			utils.E(err)
-			defer func() { _ = res.Body.Close() }()
-
-			if res.StatusCode == http.StatusOK {
-				buf := make([]byte, 64*1024) // a TCP packet won't be larger than 64KB
-				_, err = res.Body.Read(buf)
-				utils.E(err)
-
-				setURL.Do(func() {
-					fastest = u
-					cancel()
-				})
-			}
-		}()
-	}
-	wg.Wait()
-
-	return
-}
-
-func (lc *Browser) download(ctx context.Context, u string) error {
-	lc.Logger.Println("Download:", u)
-
-	zipPath := filepath.Join(lc.Dir, fmt.Sprintf("chromium-%d.zip", lc.Revision))
-
-	err := utils.Mkdir(lc.Dir)
-	utils.E(err)
-
-	zipFile, err := os.Create(zipPath)
-	utils.E(err)
-
-	q, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	utils.E(err)
-
-	res, err := lc.httpClient().Do(q)
-	utils.E(err)
-	defer func() { _ = res.Body.Close() }()
-
-	size, _ := strconv.ParseInt(res.Header.Get("Content-Length"), 10, 64)
-
-	if res.StatusCode >= 400 || size < 1024*1024 {
-		b, err := ioutil.ReadAll(res.Body)
-		utils.E(err)
-		err = errors.New("failed to download the browser")
-		return fmt.Errorf("%w: %d %s", err, res.StatusCode, string(b))
-	}
-
-	progress := &progresser{
-		size:   int(size),
-		logger: lc.Logger,
-	}
-
-	_, err = io.Copy(io.MultiWriter(progress, zipFile), res.Body)
-	utils.E(err)
-
-	err = zipFile.Close()
-	utils.E(err)
-
-	unzipPath := filepath.Join(lc.Dir, fmt.Sprintf("chromium-%d", lc.Revision))
-	_ = os.RemoveAll(unzipPath)
-	utils.E(unzip(lc.Logger, zipPath, unzipPath))
-	return os.Remove(zipPath)
 }
 
 func (lc *Browser) httpClient() *http.Client {
